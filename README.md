@@ -1,8 +1,13 @@
 # Time Series Rollup System
 
+<div align="center">
+  <img src="docs/images/time-series-elephant.png" alt="Time Series Rollup System - PostgreSQL Elephant with Time Series Visualization" width="300px">
+  <p><em>Efficient time-series data management with PostgreSQL</em></p>
+</div>
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-12+-blue.svg)](https://www.postgresql.org/)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-12+-blue.svg)](https://www.postgresql.org/)
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/anilpraneeth/time-series-rollup/graphs/commit-activity)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
 
