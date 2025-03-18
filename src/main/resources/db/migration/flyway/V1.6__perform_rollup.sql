@@ -2,6 +2,27 @@
 CREATE OR REPLACE FUNCTION silver.perform_rollup(
     specific_table TEXT DEFAULT NULL
 ) RETURNS VOID AS $$
+    /*
+    Performs time-series data aggregation based on configured rollup settings.
+    Enhanced with monitoring, retry mechanism, and improved logging.
+    
+    Features:
+    1. Consistent success logging
+    2. Execution time monitoring
+    3. Integration with retry mechanism
+    4. Alert threshold monitoring
+    5. Optimistic locking for concurrent safety
+    6. Adaptive processing windows
+    7. Comprehensive error handling
+    
+    Parameters:
+    - specific_table: Optional. If provided, only process this table.
+                     If NULL, process all active tables.
+    
+    Example:
+    SELECT silver.perform_rollup();  -- Process all tables
+    SELECT silver.perform_rollup('schema.table');  -- Process specific table
+    */
     DECLARE
         config_record RECORD;
         cutoff_time TIMESTAMPTZ;
@@ -48,7 +69,7 @@ CREATE OR REPLACE FUNCTION silver.perform_rollup(
                 AND (rc.status = 'idle' 
                      OR (rc.status = 'processing' 
                          AND rc.started_at < current_ts - rc.alert_threshold))
-            ORDER BY rc.last_processed_time NULLS FIRST
+            ORDER BY rc.last_processed_time NULLS FIRST  -- Process oldest data first
         LOOP
             RAISE NOTICE 'Processing configuration: id=%, source=%, target=%, interval=%', 
                 config_record.id, config_record.source_table, config_record.target_table, config_record.rollup_table_interval;
@@ -394,7 +415,7 @@ CREATE OR REPLACE FUNCTION silver.perform_rollup(
                     -- Update progress with optimistic locking
                     UPDATE silver.timeseries_rollup_config
                     SET status = 'idle',
-                        last_processed_time = end_time,
+                        last_processed_time = CASE WHEN rows_processed > 0 THEN end_time END,
                         avg_processing_time = (
                             COALESCE(avg_processing_time, INTERVAL '0') * 0.7 + 
                             (clock_timestamp() - batch_start_time) * 0.3
@@ -420,7 +441,8 @@ CREATE OR REPLACE FUNCTION silver.perform_rollup(
                         RAISE NOTICE 'Concurrent update detected for task %, continuing', config_record.id;
                     ELSE
                         RAISE NOTICE 'Successfully updated progress for task %. New last_processed_time: %', 
-                            config_record.id, end_time;
+                            config_record.id, 
+                            CASE WHEN rows_processed > 0 THEN end_time END;
                     END IF;
                 END IF;
 
@@ -486,7 +508,7 @@ GRANT EXECUTE ON FUNCTION silver.perform_rollup(TEXT) TO db_ecs_user;
 
 -- Add comments
 COMMENT ON FUNCTION silver.perform_rollup(TEXT) IS 
-'Performs time-series data aggregation based on configured rollup settings.
+'Enhanced version of perform_rollup with monitoring, retry mechanism, and improved logging.
 Features:
 1. Consistent success logging
 2. Execution time monitoring
