@@ -39,8 +39,8 @@ Thumbs.db
 .env.local
 .env.*.local
 
-# Keep .wiki directory
-!.wiki/
+# Wiki
+.wiki/
 
 # Virtual Environment
 venv/
