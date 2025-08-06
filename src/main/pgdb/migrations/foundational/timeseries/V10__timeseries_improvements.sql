@@ -135,8 +135,6 @@ GRANT SELECT ON silver.timeseries_operations_monitor TO db_ecs_user;
 GRANT EXECUTE ON FUNCTION silver.handle_rollup_retries() TO db_ecs_user;
 GRANT EXECUTE ON FUNCTION silver.log_rollup_success(TEXT, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) TO db_ecs_user;
 
--- Add cron job for retry handling
-SELECT cron.schedule('*/5 * * * *', $$SELECT silver.handle_rollup_retries()$$);
 
 -- Add comments
 COMMENT ON VIEW silver.timeseries_operations_monitor IS 

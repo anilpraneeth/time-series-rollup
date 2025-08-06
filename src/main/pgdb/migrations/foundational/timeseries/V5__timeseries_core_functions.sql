@@ -17,19 +17,24 @@ CREATE OR REPLACE FUNCTION silver.time_bucket(
     
     Example: time_bucket('1 hour', '2024-03-15 14:30:00') returns '2024-03-15 14:00:00'
     */
+    DECLARE
+        epoch_seconds BIGINT;
+        bucket_seconds BIGINT;
     BEGIN
-        RETURN CASE 
-            WHEN bucket_width = INTERVAL '1 second' THEN date_trunc('second', ts)
-            WHEN bucket_width = INTERVAL '1 minute' THEN date_trunc('minute', ts)
-            WHEN bucket_width = INTERVAL '1 hour' THEN date_trunc('hour', ts)
-            WHEN bucket_width = INTERVAL '1 day' THEN date_trunc('day', ts)
-            WHEN bucket_width = INTERVAL '1 week' THEN date_trunc('week', ts)
-            WHEN bucket_width = INTERVAL '1 month' THEN date_trunc('month', ts)
-            ELSE date_trunc(
-                (EXTRACT(epoch FROM bucket_width)::text || ' seconds')::text, 
-                ts
-            )
-        END;
+        -- Handle common intervals using date_trunc
+        CASE 
+            WHEN bucket_width = INTERVAL '1 second' THEN RETURN date_trunc('second', ts);
+            WHEN bucket_width = INTERVAL '1 minute' THEN RETURN date_trunc('minute', ts);
+            WHEN bucket_width = INTERVAL '1 hour' THEN RETURN date_trunc('hour', ts);
+            WHEN bucket_width = INTERVAL '1 day' THEN RETURN date_trunc('day', ts);
+            WHEN bucket_width = INTERVAL '1 week' THEN RETURN date_trunc('week', ts);
+            WHEN bucket_width = INTERVAL '1 month' THEN RETURN date_trunc('month', ts);
+            ELSE
+                -- For custom intervals, use epoch calculations
+                epoch_seconds := EXTRACT(epoch FROM ts)::BIGINT;
+                bucket_seconds := EXTRACT(epoch FROM bucket_width)::BIGINT;
+                RETURN to_timestamp((epoch_seconds / bucket_seconds) * bucket_seconds);
+        END CASE;
     END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 

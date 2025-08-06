@@ -245,61 +245,28 @@ RETURNS TABLE (
     is_valid BOOLEAN,
     validation_message TEXT
 ) AS $$
-    /*
-    Validates all rollup configurations for correctness and completeness.
-    
-    Validation Steps:
-    1. For each rollup configuration:
-       a. Verifies source and target tables exist
-       b. Checks for required timestamp column in source
-       c. Validates dimension columns:
-          - Exists in source if used
-          - Has corresponding column in target
-       d. Validates numeric columns:
-          - Checks for min/max/avg variants in target
-       e. Validates JSONB columns:
-          - Checks for array type in target
-          - Verifies GIN index exists
-       f. Reports missing or mismatched columns
-    
-    Returns:
-    - source_table: The source table being validated
-    - target_table: The target rollup table
-    - is_valid: Whether the configuration is valid
-    - validation_message: Detailed message about validation status
-    
-    Example: SELECT * FROM validate_rollup_config();
-    */
     DECLARE
         config_record RECORD;
         source_schema TEXT;
         source_table_name TEXT;
         target_schema TEXT;
         target_table_name TEXT;
-        source_exists BOOLEAN;
         target_exists BOOLEAN;
         has_timestamp BOOLEAN;
-        missing_columns TEXT[];
-        dimension_col TEXT;
         dimension_exists BOOLEAN;
+        dimension_col TEXT;
+        missing_columns TEXT[] := '{}';
     BEGIN
         FOR config_record IN 
-            SELECT * FROM silver.timeseries_rollup_config
+            SELECT * FROM silver.timeseries_rollup_config 
+            WHERE is_active = TRUE
         LOOP
-            missing_columns := ARRAY[]::TEXT[];
             source_schema := split_part(config_record.source_table, '.', 1);
             source_table_name := split_part(config_record.source_table, '.', 2);
             target_schema := split_part(config_record.target_table, '.', 1);
             target_table_name := split_part(config_record.target_table, '.', 2);
 
-            -- Check table existence
-            SELECT EXISTS (
-                SELECT 1 
-                FROM information_schema.tables 
-                WHERE table_schema = source_schema 
-                AND table_name = source_table_name
-            ) INTO source_exists;
-
+            -- Check if target table exists
             SELECT EXISTS (
                 SELECT 1 
                 FROM information_schema.tables 
@@ -307,26 +274,14 @@ RETURNS TABLE (
                 AND table_name = target_table_name
             ) INTO target_exists;
 
-            -- Check timestamp column
-            IF source_exists THEN
-                SELECT EXISTS (
-                    SELECT 1 
-                    FROM information_schema.columns 
-                    WHERE table_schema = source_schema 
-                    AND table_name = source_table_name 
-                    AND column_name = 'timestamp'
-                ) INTO has_timestamp;
-            END IF;
-
-            -- Basic validation
-            IF NOT source_exists THEN
-                RETURN QUERY SELECT 
-                    config_record.source_table,
-                    config_record.target_table,
-                    FALSE,
-                    'Source table does not exist';
-                CONTINUE;
-            END IF;
+            -- Check if source table has timestamp column
+            SELECT EXISTS (
+                SELECT 1 
+                FROM information_schema.columns 
+                WHERE table_schema = source_schema 
+                AND table_name = source_table_name 
+                AND column_name = 'timestamp'
+            ) INTO has_timestamp;
 
             IF NOT target_exists THEN
                 RETURN QUERY SELECT 
@@ -346,9 +301,12 @@ RETURNS TABLE (
                 CONTINUE;
             END IF;
 
-            -- Validate dimension columns
+            -- Validate dimension columns from timeseries_dimension_config
             FOR dimension_col IN 
-                SELECT unnest(ARRAY['company_name', 'site_name', 'device_id'])
+                SELECT dimension_column
+                FROM silver.timeseries_dimension_config
+                WHERE source_table = config_record.source_table
+                AND is_active = TRUE
             LOOP
                 SELECT EXISTS (
                     SELECT 1 
@@ -373,88 +331,21 @@ RETURNS TABLE (
                 END IF;
             END LOOP;
 
-            -- Validate numeric columns
-            FOR dimension_col IN 
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_schema = source_schema 
-                AND table_name = source_table_name 
-                AND data_type IN ('integer', 'numeric', 'real', 'double precision')
-                AND column_name NOT IN ('rollup_count')
-                AND column_name NOT LIKE 'min_%'
-                AND column_name NOT LIKE 'max_%'
-                AND column_name NOT LIKE 'avg_%'
-            LOOP
-                SELECT EXISTS (
-                    SELECT 1 
-                    FROM information_schema.columns 
-                    WHERE table_schema = target_schema 
-                    AND table_name = target_table_name 
-                    AND column_name IN (
-                        'min_' || dimension_col,
-                        'max_' || dimension_col,
-                        'avg_' || dimension_col
-                    )
-                ) INTO dimension_exists;
-
-                IF NOT dimension_exists THEN
-                    missing_columns := array_append(missing_columns, 
-                        'Statistical columns for ' || dimension_col);
-                END IF;
-            END LOOP;
-
-            -- Validate JSONB columns
-            FOR dimension_col IN 
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_schema = source_schema 
-                AND table_name = source_table_name 
-                AND data_type = 'jsonb'
-            LOOP
-                -- Check if target has corresponding array column
-                SELECT EXISTS (
-                    SELECT 1 
-                    FROM information_schema.columns 
-                    WHERE table_schema = target_schema 
-                    AND table_name = target_table_name 
-                    AND column_name = dimension_col
-                    AND data_type = 'jsonb[]'
-                ) INTO dimension_exists;
-
-                IF NOT dimension_exists THEN
-                    missing_columns := array_append(missing_columns, 
-                        'JSONB array column for ' || dimension_col);
-                ELSE
-                    -- Check for GIN index
-                    SELECT EXISTS (
-                        SELECT 1 
-                        FROM pg_indexes 
-                        WHERE schemaname = target_schema 
-                        AND tablename = target_table_name 
-                        AND indexname = 'idx_' || target_table_name || '_' || dimension_col || '_gin'
-                    ) INTO dimension_exists;
-
-                    IF NOT dimension_exists THEN
-                        missing_columns := array_append(missing_columns, 
-                            'GIN index for JSONB array column ' || dimension_col);
-                    END IF;
-                END IF;
-            END LOOP;
-
-            -- Return validation result
             IF array_length(missing_columns, 1) > 0 THEN
                 RETURN QUERY SELECT 
                     config_record.source_table,
                     config_record.target_table,
                     FALSE,
-                    'Missing columns in target table: ' || array_to_string(missing_columns, ', ');
-            ELSE
-                RETURN QUERY SELECT 
-                    config_record.source_table,
-                    config_record.target_table,
-                    TRUE,
-                    'Configuration is valid';
+                    'Missing dimension columns in target table: ' || array_to_string(missing_columns, ', ');
+                CONTINUE;
             END IF;
+
+            -- If we get here, everything is valid
+            RETURN QUERY SELECT 
+                config_record.source_table,
+                config_record.target_table,
+                TRUE,
+                'Configuration is valid';
         END LOOP;
     END;
 $$ LANGUAGE plpgsql;

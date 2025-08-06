@@ -178,6 +178,7 @@ CREATE OR REPLACE FUNCTION silver.perform_rollup(
                       AND tdc.is_active = TRUE
                 LOOP
                     BEGIN
+                        -- First check if column exists in source table
                         EXECUTE format('
                             SELECT EXISTS (
                                 SELECT 1 
@@ -192,41 +193,89 @@ CREATE OR REPLACE FUNCTION silver.perform_rollup(
                         ) INTO dimension_col_exists;
                         
                         IF dimension_col_exists THEN
-                            dimension_columns := array_append(dimension_columns, dimension_col);
-                            target_columns := array_append(target_columns, dimension_col);
-                            select_list := array_append(select_list, quote_ident(dimension_col));
-                            processed_columns := array_append(processed_columns, dimension_col);
+                            -- Then check if column exists in target table
+                            EXECUTE format('
+                                SELECT EXISTS (
+                                    SELECT 1 
+                                    FROM information_schema.columns 
+                                    WHERE table_schema = %L 
+                                        AND table_name = %L 
+                                        AND column_name = %L
+                                )',
+                                target_schema,
+                                target_table,
+                                dimension_col
+                            ) INTO dimension_col_exists;
+                            
+                            IF dimension_col_exists THEN
+                                dimension_columns := array_append(dimension_columns, dimension_col);
+                                target_columns := array_append(target_columns, dimension_col);
+                                select_list := array_append(select_list, quote_ident(dimension_col));
+                                processed_columns := array_append(processed_columns, dimension_col);
+                            ELSE
+                                -- Log error for missing dimension column in target table
+                                INSERT INTO silver.timeseries_error_log 
+                                    (source_table, target_table, error_message, error_detail)
+                                VALUES 
+                                    (config_record.source_table, config_record.target_table,
+                                     'Missing dimension column in target table',
+                                     format('Dimension column %L configured but not found in target table %L.%L',
+                                           dimension_col, target_schema, target_table));
+                            END IF;
+                        ELSE
+                            -- Log error for missing dimension column in source table
+                            INSERT INTO silver.timeseries_error_log 
+                                (source_table, target_table, error_message, error_detail)
+                            VALUES 
+                                (config_record.source_table, config_record.target_table,
+                                 'Missing dimension column in source table',
+                                 format('Dimension column %L configured but not found in source table %L.%L',
+                                       dimension_col, source_schema, source_table));
                         END IF;
                     EXCEPTION WHEN OTHERS THEN
-                        INSERT INTO silver.timeseries_error_log (
-                            source_table, 
-                            target_table, 
-                            error_message, 
-                            sql_state,
-                            error_detail, 
-                            error_hint, 
-                            error_context
-                        ) VALUES (
-                            config_record.source_table,
-                            config_record.target_table,
-                            format('Error checking dimension column %s: %s', dimension_col, SQLERRM),
-                            SQLSTATE,
-                            COALESCE(SQLERRM, 'No detail'),
-                            'Check if the column exists and is accessible',
-                            'During dimension column processing'
-                        );
-                        error_occurred := TRUE;
-                        CONTINUE;
+                        -- Log any errors during dimension processing
+                        INSERT INTO silver.timeseries_error_log 
+                            (source_table, target_table, error_message, error_detail, sql_state)
+                        VALUES 
+                            (config_record.source_table, config_record.target_table,
+                             'Error processing dimension column',
+                             format('Error processing dimension column %L: %s',
+                                   dimension_col, SQLERRM),
+                             SQLSTATE);
                     END;
                 END LOOP;
                 
                 -- Build GROUP BY clause
                 IF array_length(dimension_columns, 1) > 0 THEN
+                    -- Get only the verified dimension columns that exist in both tables
                     SELECT string_agg(quote_ident(col), ', ') INTO group_by_clause
-                    FROM unnest(dimension_columns) AS col;
-                    group_by_clause := format('silver.time_bucket(%L, timestamp), %s',
-                        config_record.rollup_table_interval,
-                        group_by_clause);
+                    FROM (
+                        SELECT DISTINCT col
+                        FROM unnest(dimension_columns) AS col
+                        WHERE EXISTS (
+                            SELECT 1 
+                            FROM information_schema.columns 
+                            WHERE table_schema = source_schema
+                                AND table_name = source_table
+                                AND column_name = col
+                        )
+                        AND EXISTS (
+                            SELECT 1 
+                            FROM information_schema.columns 
+                            WHERE table_schema = target_schema
+                                AND table_name = target_table
+                                AND column_name = col
+                        )
+                    ) AS verified_cols;
+                    
+                    IF group_by_clause IS NOT NULL THEN
+                        group_by_clause := format('silver.time_bucket(%L, timestamp), %s',
+                            config_record.rollup_table_interval,
+                            group_by_clause);
+                    ELSE
+                        group_by_clause := format('silver.time_bucket(%L, timestamp)',
+                            config_record.rollup_table_interval);
+                    END IF;
                 ELSE
                     group_by_clause := format('silver.time_bucket(%L, timestamp)',
                         config_record.rollup_table_interval);
@@ -391,7 +440,11 @@ CREATE OR REPLACE FUNCTION silver.perform_rollup(
                     end_time,
                     group_by_clause,
                     CASE WHEN array_length(dimension_columns, 1) > 0 
-                         THEN ', ' || array_to_string(dimension_columns, ', ')
+                         THEN ', ' || array_to_string(
+                             (SELECT array_agg(DISTINCT col) 
+                              FROM unnest(dimension_columns) AS col 
+                              WHERE col = ANY(target_columns)), 
+                             ', ')
                          ELSE '' END,
                     update_clause
                 );

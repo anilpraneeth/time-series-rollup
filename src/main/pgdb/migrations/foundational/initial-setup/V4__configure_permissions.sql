@@ -1,0 +1,15 @@
+-- Grant schema permissions to db_ecs_user
+GRANT USAGE ON SCHEMA raw TO db_ecs_user;
+GRANT USAGE ON SCHEMA silver TO db_ecs_user;
+GRANT USAGE ON SCHEMA gold TO db_ecs_user;
+GRANT USAGE ON SCHEMA raw_archive TO db_ecs_user;
+GRANT USAGE ON SCHEMA silver_archive TO db_ecs_user;
+GRANT USAGE ON SCHEMA gold_archive TO db_ecs_user;
+
+-- Grant default privileges for future tables
+ALTER DEFAULT PRIVILEGES IN SCHEMA raw GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO db_ecs_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO db_ecs_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA gold GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO db_ecs_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA raw_archive GRANT SELECT ON TABLES TO db_ecs_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA silver_archive GRANT SELECT ON TABLES TO db_ecs_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA gold_archive GRANT SELECT ON TABLES TO db_ecs_user; 

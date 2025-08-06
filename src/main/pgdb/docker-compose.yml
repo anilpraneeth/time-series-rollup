@@ -1,0 +1,9 @@
+services:
+  flyway:
+    image: redgate/flyway
+    stdin_open: true
+    tty: true
+    network_mode: "host"
+    entrypoint: ["bash"] 
+    volumes:
+      - ./:/flyway/pgdb
