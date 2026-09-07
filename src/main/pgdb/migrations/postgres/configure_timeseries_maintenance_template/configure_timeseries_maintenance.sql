@@ -1,25 +1,7 @@
--- Template variable: table_name
-
-SELECT cron.schedule(
-    'maintain_{table_name}_5m',
-    '0 0 * * *',  -- Run daily at midnight
-    $$SELECT silver.maintain_timeseries_tables('silver.{table_name}_5m')$$
+-- All placeholders are complete SQL literals quoted by generate_migration.py.
+SELECT cron.schedule_in_database(
+    {job_name},
+    {schedule},
+    {command},
+    {database}
 );
-
-SELECT cron.schedule(
-    'maintain_{table_name}_1m',
-    '0 0 * * *',  -- Run daily at midnight
-    $$SELECT silver.maintain_timeseries_tables('silver.{table_name}_1m')$$
-);
-
--- Update existing cron jobs for table
-
-UPDATE cron.job 
-SET database = 'iotmetrics',
-    command = 'SELECT silver.maintain_timeseries_tables(''silver.{table_name}_5m'')'
-WHERE jobname = 'maintain_{table_name}_1s';
-
-UPDATE cron.job 
-SET database = 'iotmetrics',
-    command = 'SELECT silver.maintain_timeseries_tables(''silver.{table_name}_1m'')'
-WHERE jobname = 'maintain_{table_name}_1m'; 

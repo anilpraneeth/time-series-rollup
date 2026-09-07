@@ -1,292 +1,167 @@
-# Time Series Rollup System
+# Time Series Rollup
 
-<div align="center">
-  <img src="docs/images/time-series-elephant.png" alt="Time Series Rollup System - PostgreSQL Elephant with Time Series Visualization" width="300px">
-  <p><em>Enterprise-grade time-series data management with PostgreSQL</em></p>
-</div>
+<p align="center"><img src="docs/images/time-series-elephant.png" alt="PostgreSQL time series elephant" width="260"></p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-12+-blue.svg)](https://www.postgresql.org/)
-[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/anilpraneeth/time-series-rollup/graphs/commit-activity)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
+PostgreSQL time-series aggregation with complete-bucket refreshes, incremental workers, and composable numeric statistics. Run it on PostgreSQL 14+ without extensions, or use pg_partman 5+ for partition management and pg_cron for scheduling.
 
-A production-ready PostgreSQL-based system for managing and aggregating time-series data with exponential rollup strategies, adaptive processing windows, comprehensive monitoring, and robust error handling. This system is specifically designed for AWS RDS or Aurora PostgreSQL as an alternative to pg_timeseries and pg_timescaledb, which are not supported in these environments.
+The reliability update adds a working local installation, database integration tests, safe backfills, bounded retries, and corrected operational statistics. Existing migrations remain unchanged; V11 and V12 introduce the new engine. **Existing rollup targets need recreation and backfill before using the new engine.** See the [upgrade guide](docs/upgrading.md).
 
-## Table of Contents
-- [Quick Start](#quick-start)
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [System Architecture](#system-architecture)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Monitoring & Maintenance](#monitoring--maintenance)
-- [Permissions](#permissions)
-- [Contributing](#contributing)
-- [Roadmap](#roadmap)
-- [License](#license)
-- [Acknowledgments](#acknowledgments)
+## Quick start
 
-## Quick Start
+From the repository root, with Docker Compose:
 
-1. **Install Required Extensions**
-```sql
-CREATE EXTENSION IF NOT EXISTS pg_partman;
-CREATE EXTENSION IF NOT EXISTS ltree;
-CREATE EXTENSION IF NOT EXISTS btree_gin;
-CREATE EXTENSION IF NOT EXISTS hypopg;
-CREATE EXTENSION IF NOT EXISTS pg_cron;
+```sh
+make up
+make install-docker
+make demo-docker
 ```
 
-2. **Run the Installation**
-```bash
-# Using Flyway (Recommended)
-flyway -configFiles=src/main/pgdb/flyway.conf migrate
+This starts PostgreSQL 16 on `localhost:55432`, installs into the empty `rollup` database, and runs a repeatable example with a late correction. Local development credentials are `rollup` / `rollup`; the port binds to localhost. `make down` stops the service and preserves its data.
 
-# OR using direct SQL
-psql -U your_user -d your_database -f src/main/pgdb/migrations/foundational/timeseries/V5__timeseries_core_functions.sql
+With an existing **empty development database** and `psql`:
+
+```sh
+export DATABASE_URL='postgresql://localhost/rollup_dev'
+make install
+make demo
 ```
 
-3. **Create Your First Rollup Table**
+The portable installer requires permission to create schemas and the `db_ecs_user` role. It applies everything in one transaction, refuses an existing installation, and does not create AWS IAM roles or Flyway history. See [local development](docs/local-development.md) for setup and testing details.
+
+## Create and refresh a rollup
+
+A source must have `timestamp TIMESTAMPTZ NOT NULL`. Register each grouping column as a dimension; dimensions must be `NOT NULL`. Every remaining source column must be a supported numeric metric (`smallint`, `integer`, `bigint`, `numeric`, `real`, or `double precision`). Use a dedicated numeric source table when incoming payloads contain fields you do not want to group by.
+
 ```sql
-SELECT silver.create_rollup_table(
-    source_table_name := 'your_source_table',
-    target_table_name := 'your_target_table',
-    rollup_interval := '1 hour',
-    look_back_window := '7 days'
+CREATE TABLE raw.readings (
+    timestamp timestamptz NOT NULL,
+    device text NOT NULL,
+    temperature integer,
+    power numeric(12,2)
 );
+CREATE INDEX ON raw.readings (timestamp);
+
+INSERT INTO silver.timeseries_dimension_config (source_table, dimension_column)
+VALUES ('raw.readings', 'device');
+
+SELECT silver.create_rollup_table(
+    source_table_name := 'raw.readings',
+    target_schema := 'silver',
+    target_table_name := 'readings_hourly',
+    rollup_table_interval := '1 hour',
+    look_back_window := '5 minutes',
+    processing_window := '1 day'
+);
+
+INSERT INTO raw.readings VALUES
+    ('2025-01-01 00:05+00', 'sensor-a', 20, 1.00),
+    ('2025-01-01 00:35+00', 'sensor-a', 21, 2.00);
+
+SELECT silver.refresh_rollup(
+    'silver.readings_hourly', '2025-01-01 00:00+00', '2025-01-01 01:00+00'
+);
+SELECT timestamp, device, avg_temperature, count_temperature, rollup_count
+FROM silver.readings_hourly;
+-- avg_temperature = 20.5, count_temperature = 2, rollup_count = 2
 ```
 
-4. **Start Processing**
-```sql
-SELECT silver.perform_rollup('your_table_name');
-```
+Refresh accepts complete bucket boundaries in `[start, end)`, rejects unfinished/future buckets, and returns the number of output groups. It replaces the entire requested range atomically, so reruns incorporate corrections and remove groups deleted from the source. Manual refresh does not move the incremental worker's watermark. Choose bounded ranges for large backfills.
 
-## Features
+## Rollup levels and numeric precision
 
-- **Exponential Rollup**: Efficiently aggregates time-series data at different time intervals
-- **Adaptive Processing**: Automatically adjusts processing windows based on system load and performance
-- **Smart Partition Management**: Optimizes chunk intervals based on data ingestion rates and target sizes
-- **Comprehensive Monitoring**: Built-in monitoring views and performance tracking
-- **Retry Mechanism**: Exponential backoff retry with configurable thresholds
-- **Concurrent Processing**: Safe handling of multiple rollup operations with optimistic locking
-- **Error Handling**: Comprehensive error logging and recovery mechanisms
-- **Performance Optimization**: Automatic partition optimization and maintenance procedures
-- **Required Extensions**:
-  - pg_partman (for partitioning)
-  - ltree (for hierarchical data)
-  - btree_gin (for GIN index support)
-  - hypopg (for hypothetical indexes)
-  - pg_cron (for scheduled tasks)
-
-## Prerequisites
-
-- PostgreSQL 12 or higher (specifically AWS RDS PostgreSQL 12+ or Aurora PostgreSQL 12+)
-- Python 3.8 or higher (if using Python components)
-- Required PostgreSQL extensions (all available in AWS RDS/Aurora):
-  - pg_partman
-  - ltree
-  - btree_gin
-  - hypopg
-  - pg_cron
-
-## Installation
-
-The system can be installed using two methods:
-
-### Method 1: Flyway Migration (Recommended)
-```bash
-# Run foundational and timeseries migrations
-flyway -configFiles=src/main/pgdb/flyway.conf -locations=filesystem:src/main/pgdb/migrations/foundational/initial-setup,filesystem:src/main/pgdb/migrations/foundational/timeseries migrate
-```
-
-### Method 2: Direct SQL Installation
-```bash
-psql -U your_user -d your_database -f src/main/pgdb/migrations/foundational/timeseries/V5__timeseries_core_functions.sql
-```
-
-The migrations are located in the `src/main/pgdb/migrations` directory.
-
-## System Architecture
-
-The system is built with several key components:
-
-1. **Schema Structure**:
-   - raw (for raw data)
-   - silver (for processed data)
-   - gold (for aggregated data)
-   - partman (for partitioning)
-
-2. **Core Components**:
-   - Time Bucket Functions: Efficient timestamp bucketing
-   - Value Functions: First/last value aggregation
-   - Rollup Management: Table creation and processing
-   - Error Handling: Comprehensive error tracking
-   - Performance Monitoring: System health tracking
-   - Maintenance Functions: Automated optimization
-
-3. **Monitoring & Operations**:
-   - `timeseries_operations_monitor`: Real-time operation monitoring
-   - `handle_rollup_retries()`: Automated retry mechanism
-   - `optimize_chunk_interval()`: Smart partition optimization
-   - `maintain_timeseries_tables()`: Automated maintenance
-
-## Configuration
-
-The system uses several configuration tables:
-
-- `timeseries_rollup_config`: Main configuration for rollup operations
-- `timeseries_dimension_config`: Manages dimension columns
-- `timeseries_refresh_log`: Tracks successful operations
-- `timeseries_error_log`: Records error information
-
-## Usage
-
-### Creating a Rollup Table
+Every metric produces `min_`, `max_`, `sum_`, `count_`, and `avg_` columns. Min/max retain the source type. Sum and average use PostgreSQL `numeric`; count and `rollup_count` use `bigint`. Metric counts exclude null values, while `rollup_count` counts original observations. An all-null metric has count zero and null sum/average.
 
 ```sql
 SELECT silver.create_rollup_table(
-    source_table_name := 'your_source_table',
-    target_table_name := 'your_target_table',
-    rollup_interval := '1 hour',
-    look_back_window := '7 days'
+    'silver.readings_hourly', 'gold', 'readings_daily', '1 day'
 );
 ```
 
-### Running Rollups
+A derived rollup inherits the source rollup's dimensions and metrics. Its interval must be a larger exact multiple of the source interval. Weighted averages use `sum(sum_metric) / sum(count_metric)`, so sparse buckets and nulls retain their correct weights. Incremental children stop at their parent's completed watermark. For manual backfills, refresh parents before children; propagate historical corrections through every affected level.
+
+Dimension membership is frozen when a rollup is created. Editing the registration table changes future rollups; existing targets retain their original grouping.
+
+## Incremental processing and late data
 
 ```sql
-SELECT silver.perform_rollup('your_table_name');
+SELECT silver.perform_rollup();                       -- all eligible configurations
+SELECT silver.perform_rollup('raw.readings');          -- source or target filter
+
+UPDATE silver.timeseries_rollup_config
+SET refresh_overlap = '2 hours'
+WHERE target_table = 'silver.readings_hourly';
 ```
 
-### Monitoring Operations
+The first run starts at the earliest source timestamp. Each call processes one aligned, bounded forward window per eligible configuration, including empty windows, and advances its watermark only after success. `look_back_window` is the lateness delay behind the current time. `processing_window` controls batch size and is rounded down to complete buckets, with a minimum of one bucket.
+
+`refresh_overlap` recomputes recent buckets to capture late arrivals, including when already caught up. Its effective size is capped to one processing window in addition to the forward window. Older corrections require `refresh_rollup`. Index the source timestamp to support range scans. Keep worker transactions short; locks last until the caller commits or rolls back.
+
+Bucketing uses fixed UTC durations anchored at Monday, `2000-01-03 00:00:00+00`. Subsecond and pre-epoch timestamps work; weeks start on Monday. Calendar months/years, zero, negative intervals, and infinite timestamps are rejected. A day is 24 hours, independent of daylight saving time.
+
+## Failures, retries, and monitoring
+
+Workers use `FOR UPDATE SKIP LOCKED` to distribute configurations. A failed refresh rolls back its target changes and watermark while retaining an error log and retry state. One failing configuration does not abort the rest of the worker call.
 
 ```sql
--- Get real-time operation status
 SELECT * FROM silver.timeseries_operations_monitor;
+SELECT * FROM silver.validate_rollup_config();
+SELECT * FROM silver.timeseries_error_log ORDER BY error_timestamp DESC LIMIT 20;
 
--- Get detailed statistics
-SELECT * FROM silver.get_detailed_stats('your_table_pattern');
-
--- Check partition statistics
-SELECT * FROM silver.get_partition_stats('your_table_name');
+SELECT silver.handle_rollup_retries();
+-- After correcting the underlying problem, re-enable exhausted retries:
+SELECT silver.reset_rollup_retry('silver.readings_hourly');
 ```
 
-### Automated Maintenance
+Defaults allow five consecutive failed attempts, with a one-minute initial retry delay and exponential backoff capped at one hour. Both the regular worker and retry handler honor due times and retry limits. Exhausted configurations remain visible as failures until explicitly reset. A successful worker refresh resets its failure count.
+
+The monitor includes recent successes and errors, inactive configurations, lag, and retry exhaustion. A successful zero-row refresh counts as success. Refresh log `records_processed` measures output groups, not source rows. Operation status is transactional: another session cannot observe an uncommitted worker claim through this view; use `pg_stat_activity` and `pg_locks` for live execution.
+
+## Partitions and scheduling
+
+Targets use native range partitioning. Without pg_partman, a default partition accepts all dates; automatic partition rotation and retention are **not** enabled. `retention_period` is metadata in this mode. With pg_partman 5+ installed before target creation, creation registers daily partitions and retention. Historical data may land in its default partition; move it into regular partitions using pg_partman's documented procedures before relying on retention or creating overlapping partitions.
 
 ```sql
--- Optimize chunk intervals
-SELECT silver.optimize_chunk_interval('your_table_name');
-
--- Run maintenance procedures
-SELECT silver.maintain_timeseries_tables('your_table_name');
-
--- Handle retries
-SELECT silver.handle_rollup_retries();
+SELECT * FROM silver.get_partition_stats('silver.readings_hourly');
+SELECT * FROM silver.get_detailed_stats('%readings%');
+SELECT silver.maintain_timeseries_tables();
 ```
 
-## Monitoring & Maintenance
+Maintenance analyzes target tables and calls pg_partman maintenance for registered parents when available. Chunk size recommendations are advisory and do not change existing partition boundaries. Vacuum must be run by PostgreSQL autovacuum or as a standalone command. `avg_query_time` is null because no query timing source is installed; read/write statistics are cumulative counters, not rates.
 
-### Real-time Monitoring
-The system provides comprehensive monitoring through:
+Optional pg_cron scheduling, executed in the database that hosts the extension:
 
-1. **Operations Monitor View**: `silver.timeseries_operations_monitor`
-   - Health status (OK, WARNING, ALERT)
-   - Processing status and worker information
-   - Error tracking and retry counts
-   - Performance metrics
+```sql
+SELECT cron.schedule_in_database(
+    'rollup-worker', '* * * * *', 'SELECT silver.perform_rollup()', 'rollup'
+);
+SELECT cron.schedule_in_database(
+    'rollup-maintenance', '0 * * * *',
+    'SELECT silver.maintain_timeseries_tables()', 'rollup'
+);
+```
 
-2. **Performance Tracking**:
-   - Average processing duration
-   - Success rates
-   - Records processed per operation
-   - System load balancing
+Use the actual application database name and a job owner with the necessary permissions. The worker already handles due retries. Legacy PostgreSQL scheduling migrations contain deployment-specific database names and example jobs; review them before running. The [migration guide](src/main/pgdb/migrations/README.md) describes Flyway and the safe schedule generator.
 
-3. **Error Management**:
-   - Comprehensive error logging
-   - Exponential backoff retry mechanism
-   - Alert thresholds for long-running operations
-   - Detailed error context and SQL state
+## Development and verification
 
-### Automated Maintenance
-The system includes several maintenance functions:
+```sh
+make test             # disposable local PostgreSQL; requires initdb, pg_ctl, psql
+make test-docker      # disposable Docker test database
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+make shell-check
+```
 
-1. **Smart Partition Management**:
-   - `optimize_chunk_interval()`: Calculates optimal partition sizes
-   - `get_partition_stats()`: Detailed partition statistics
-   - Automatic partition optimization based on data ingestion rates
+`make test` deliberately ignores `DATABASE_URL`. Set `TEST_DATABASE_URL` only to an empty, disposable test database. CI runs database checks on PostgreSQL 14, 16, and 17 and runs the Python generator tests separately. See [engine design](docs/engine-design.md) for transaction guarantees and boundaries.
 
-2. **Table Maintenance**:
-   - `maintain_timeseries_tables()`: Automated maintenance procedures
-   - Index optimization
-   - Statistics updates
-   - Performance monitoring
+## Repository layout
 
-3. **Retry Mechanism**:
-   - `handle_rollup_retries()`: Processes failed operations
-   - Exponential backoff strategy
-   - Configurable retry limits and thresholds
+- `src/main/pgdb/migrations/foundational/`: historical setup and append-only engine migrations.
+- `src/main/pgdb/migrations/postgres/`: deployment-specific scheduling and manifest generator.
+- `scripts/`: portable installer, demo launcher, and disposable test runner.
+- `examples/quickstart.sql`: runnable example with a late correction.
+- `tests/`: SQL integration, concurrent worker, portable setup, and generator tests.
+- `docs/`: development, design, and upgrade guidance.
 
-## Permissions
+The SQL functions execute with the caller's privileges. `db_ecs_user` receives writer and sequence privileges but does not gain schema-creation privileges through a security-definer function. Use a schema owner to create rollup tables. Existing configuration fields for adaptive sizing and execution-time limits remain for compatibility; the new worker uses bounded deterministic windows. Configure a session/job `statement_timeout` when a wall-clock limit is needed.
 
-The system sets up the following permissions:
-- `datapipelineadmin`: Usage on cron and partman schemas
-- `db_ecs_user`: Usage and SELECT on all schemas
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- Built with PostgreSQL
-- Inspired by time-series data management best practices
-- Designed specifically for AWS RDS and Aurora PostgreSQL environments
-
-## Roadmap
-
-### Current Version (1.1.0)
-- ✅ Basic rollup functionality
-- ✅ Partition management
-- ✅ Error handling and logging
-- ✅ Performance monitoring
-- ✅ Real-time operations monitoring
-- ✅ Automated retry mechanism
-- ✅ Smart partition optimization
-- ✅ Comprehensive maintenance procedures
-
-### Planned Features
-- 🔄 Real-time rollup processing
-- 🔄 Advanced compression algorithms
-- 🔄 Machine learning-based window optimization
-- 🔄 Distributed processing support
-- 🔄 Enhanced monitoring dashboard
-- 🔄 Automated maintenance procedures
-- 🔄 Cloud-native deployment templates
-
-### Future Considerations
-- 📅 Integration with other time-series databases
-- 📅 Support for additional cloud providers
-- 📅 Enhanced security features
-- 📅 Advanced analytics capabilities
-- 📅 Custom aggregation functions
-- 📅 Automated backup and recovery
-
-## Documentation
-
-For detailed documentation, please visit our [Wiki](https://github.com/anilpraneeth/time-series-rollup/wiki).
-
-Key documentation sections:
-- [Architecture Overview](https://github.com/anilpraneeth/time-series-rollup/wiki/Architecture)
-- [Configuration Guide](https://github.com/anilpraneeth/time-series-rollup/wiki/Configuration)
-- [API Reference](https://github.com/anilpraneeth/time-series-rollup/wiki/API-Reference)
-- [Troubleshooting](https://github.com/anilpraneeth/time-series-rollup/wiki/Troubleshooting) 
+Licensed under [MIT](LICENSE). Contributions should add migrations for database changes, include focused regression coverage, and update the examples when behavior changes.
