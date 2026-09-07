@@ -1,0 +1,49 @@
+name: PostgreSQL regression tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  generator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run migration generator unit tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+  postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [14, 16, 17]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: rollup_test
+          POSTGRES_PASSWORD: rollup_test
+          POSTGRES_DB: rollup_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rollup_test -d rollup_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Check shell syntax
+        run: make shell-check
+      - name: Run database regression tests
+        env:
+          TEST_DATABASE_URL: postgresql://rollup_test:rollup_test@localhost:5432/rollup_test
+        run: make test

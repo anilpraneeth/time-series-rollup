@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rollup
+      POSTGRES_PASSWORD: rollup
+      POSTGRES_DB: rollup
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - rollup-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rollup -d rollup"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+  bootstrap:
+    image: postgres:16-alpine
+    profiles: ["tools"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://rollup:rollup@db:5432/rollup
+    volumes:
+      - .:/workspace:ro
+    working_dir: /workspace
+    entrypoint: ["sh", "scripts/install.sh"]
+  test:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    # initdb must run without root; the cluster and sockets live only in /tmp.
+    user: postgres
+    volumes:
+      - .:/workspace:ro
+    working_dir: /workspace
+    entrypoint: ["sh", "scripts/test.sh"]
+
+volumes:
+  rollup-data:
