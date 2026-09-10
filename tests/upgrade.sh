@@ -138,6 +138,50 @@ BEGIN
     END IF;
 END;
 $test$;
+CREATE TABLE public.upgrade_v12_snapshot AS SELECT
+    (SELECT jsonb_agg(to_jsonb(c) ORDER BY id) FROM silver.timeseries_rollup_config c) AS config,
+    (SELECT jsonb_agg(to_jsonb(t) ORDER BY timestamp) FROM silver.upgrade_hourly_v2 t) AS target,
+    (SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM silver.timeseries_refresh_log l) AS history,
+    (SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM silver.timeseries_error_log l) AS errors;
 COMMIT;
 SQL
-printf 'V10-to-V12 upgrade preserved legacy data and enabled a precise side-by-side backfill.\n'
+
+# Existing V12 deployments should gain the queue without touching their data,
+# configuration, monitoring consumers, watermarks, logs, or retry state.
+upgrade_pg --command BEGIN \
+    --file "$REPO_ROOT/src/main/pgdb/migrations/foundational/timeseries/V13__backfill_planning.sql" \
+    --file "$REPO_ROOT/src/main/pgdb/migrations/foundational/timeseries/V14__resumable_backfill_jobs.sql" \
+    --file - <<'SQL'
+DO $test$
+BEGIN
+    IF (SELECT jsonb_agg(to_jsonb(c) ORDER BY id) FROM silver.timeseries_rollup_config c)
+        IS DISTINCT FROM (SELECT config FROM public.upgrade_v12_snapshot)
+       OR (SELECT jsonb_agg(to_jsonb(t) ORDER BY timestamp) FROM silver.upgrade_hourly_v2 t)
+        IS DISTINCT FROM (SELECT target FROM public.upgrade_v12_snapshot)
+       OR (SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM silver.timeseries_refresh_log l)
+        IS DISTINCT FROM (SELECT history FROM public.upgrade_v12_snapshot)
+       OR (SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM silver.timeseries_error_log l)
+        IS DISTINCT FROM (SELECT errors FROM public.upgrade_v12_snapshot) THEN
+        RAISE EXCEPTION 'V12-to-V14 upgrade altered existing state';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.upgrade_monitor_consumer WHERE health_status = 'UPGRADE REQUIRED') THEN
+        RAISE EXCEPTION 'V12-to-V14 upgrade broke existing view consumers';
+    END IF;
+END;
+$test$;
+SELECT silver.enqueue_rollup_backfill('silver.upgrade_hourly_v2', '2025-01-01 00:05+00', '2025-01-01 00:40+00') AS upgrade_job \gset
+SELECT silver.run_rollup_backfills(1, :upgrade_job);
+DO $test$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM silver.timeseries_backfill_monitor
+        WHERE status = 'completed' AND progress_percent = 100 AND records_processed = 1)
+       OR NOT EXISTS (SELECT 1 FROM silver.upgrade_hourly_v2 WHERE avg_value = 1.5 AND count_value = 2)
+       OR (SELECT jsonb_agg(to_jsonb(c) ORDER BY id) FROM silver.timeseries_rollup_config c)
+        IS DISTINCT FROM (SELECT config FROM public.upgrade_v12_snapshot) THEN
+        RAISE EXCEPTION 'Upgraded backfill did not preserve accuracy and scheduled worker state';
+    END IF;
+END;
+$test$;
+COMMIT;
+SQL
+printf 'V10-to-V12 and V12-to-V14 upgrades preserved existing state and enabled precise backfills.\n'

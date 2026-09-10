@@ -1,10 +1,10 @@
 # Database migrations
 
-Foundational migrations V1–V10 are historical deployment artifacts. V11 adds the reliable numeric rollup engine; V12 replaces operational statistics, validation, and maintenance. Never edit or regenerate a migration already applied to a database.
+Foundational migrations V1–V10 are historical deployment artifacts. V11 adds the reliable numeric rollup engine; V12 replaces operational statistics, validation, and maintenance. V13 adds dependency-aware backfill planning; V14 adds resumable jobs and progress monitoring. Never edit or regenerate a migration already applied to a database.
 
 ## Choose an installation path
 
-- **Fresh local or portable PostgreSQL 14+**: run `make install` from the repository root with `DATABASE_URL` set to an empty database. This applies the portable bootstrap and V5–V12 atomically, without extension or AWS dependencies and without Flyway history.
+- **Fresh local or portable PostgreSQL 14+**: run `make install` from the repository root with `DATABASE_URL` set to an empty database. This applies the portable bootstrap and V5–V14 atomically, without extension or AWS dependencies and without Flyway history.
 - **Existing Flyway deployment**: keep its existing history table and run the foundational configuration below. Read the [upgrade guide](../../../../docs/upgrading.md) before V11, because legacy rollup tables need recreation and backfill.
 - **Fresh AWS-specific Flyway deployment**: review `foundational/initial-setup` first. These historical migrations assume `datapipelineadmin`, the RDS `rds_iam` role, and available pg_partman, ltree, btree_gin, and hypopg extensions. V3 creates `db_ecs_user`; it must not already exist. This path is distinct from the extension-free portable bootstrap.
 
@@ -25,6 +25,7 @@ foundational/initial-setup/  V1–V4: historical schemas, AWS roles, extensions,
 foundational/timeseries/    V5–V10: original engine
                            V11: complete-bucket refresh and incremental numeric engine
                            V12: monitoring, validation, and maintenance
+                           V13–V14: dependency-aware plans and resumable backfill jobs
 postgres/                  V1–V4: historical deployment-specific pg_cron setup
                            generate_migration.py: safe manifest-driven schedule generator
 ```

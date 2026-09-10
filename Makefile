@@ -1,7 +1,7 @@
 DATABASE_URL ?= postgresql://rollup:rollup@localhost:55432/rollup
 export DATABASE_URL
 
-.PHONY: help up down install install-docker demo demo-docker test test-docker shell-check
+.PHONY: help up down install install-docker demo demo-docker backfill-demo backfill-demo-docker test test-docker shell-check
 
 help:
 	@printf '%s\n' \
@@ -9,6 +9,8 @@ help:
 	  'make install-docker Install into the empty Docker database' \
 	  'make demo-docker Run the repeatable SQL example in Docker' \
 	  'make demo        Run the repeatable SQL example (requires psql)' \
+	  'make backfill-demo Run a resumable hierarchy backfill example' \
+	  'make backfill-demo-docker Run the backfill example in Docker' \
 	  'make install     Install into an empty DATABASE_URL (requires psql)' \
 	  'make test        Run tests in a disposable local PostgreSQL cluster' \
 	  'make test-docker Run tests in a disposable Docker database' \
@@ -32,6 +34,12 @@ install:
 
 demo:
 	./scripts/demo.sh
+
+backfill-demo:
+	sh scripts/backfill-demo.sh
+
+backfill-demo-docker:
+	docker compose run --rm --entrypoint sh bootstrap scripts/backfill-demo.sh
 
 test:
 	./scripts/test.sh

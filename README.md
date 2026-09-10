@@ -2,9 +2,9 @@
 
 <p align="center"><img src="docs/images/time-series-elephant.png" alt="PostgreSQL time series elephant" width="260"></p>
 
-PostgreSQL time-series aggregation with complete-bucket refreshes, incremental workers, and composable numeric statistics. Run it on PostgreSQL 14+ without extensions, or use pg_partman 5+ for partition management and pg_cron for scheduling.
+PostgreSQL time-series aggregation with complete-bucket refreshes, incremental workers, resumable backfills, and composable numeric statistics. Run it on PostgreSQL 14+ without extensions, or use pg_partman 5+ for partition management and pg_cron for scheduling.
 
-The reliability update adds a working local installation, database integration tests, safe backfills, bounded retries, and corrected operational statistics. Existing migrations remain unchanged; V11 and V12 introduce the new engine. **Existing rollup targets need recreation and backfill before using the new engine.** See the [upgrade guide](docs/upgrading.md).
+V13 and V14 add dependency-aware backfill plans, durable jobs, and progress monitoring on top of the V11/V12 engine. Existing migrations remain unchanged. **Legacy V1–V10 rollup targets need recreation and backfill before using the new engine.** Existing V12 installations can apply the two additive migrations without rebuilding targets. See the [upgrade guide](docs/upgrading.md).
 
 ## Quick start
 
@@ -77,9 +77,31 @@ SELECT silver.create_rollup_table(
 );
 ```
 
-A derived rollup inherits the source rollup's dimensions and metrics. Its interval must be a larger exact multiple of the source interval. Weighted averages use `sum(sum_metric) / sum(count_metric)`, so sparse buckets and nulls retain their correct weights. Incremental children stop at their parent's completed watermark. For manual backfills, refresh parents before children; propagate historical corrections through every affected level.
+A derived rollup inherits the source rollup's dimensions and metrics. Its interval must be a larger exact multiple of the source interval. Weighted averages use `sum(sum_metric) / sum(count_metric)`, so sparse buckets and nulls retain their correct weights. Incremental children stop at their parent's completed watermark. For historical corrections, the backfill queue refreshes every ancestor before the selected target.
 
 Dimension membership is frozen when a rollup is created. Editing the registration table changes future rollups; existing targets retain their original grouping.
+
+## Resumable historical backfills
+
+Choose the coarsest target you need to repair. The planner includes every ancestor back to the raw source and expands your requested range to that target's complete buckets. Confirm that raw observations for the expanded range are still retained.
+
+```sql
+SELECT * FROM silver.plan_rollup_backfill(
+    'gold.readings_daily', '2025-01-01 00:05+00', '2025-01-01 00:40+00'
+);
+-- Plans hourly, then daily, covering the entire UTC day.
+
+SELECT silver.enqueue_rollup_backfill(
+    'gold.readings_daily', '2025-01-01 00:05+00', '2025-01-01 00:40+00'
+); -- Returns the job ID.
+
+SELECT silver.run_rollup_backfills(10); -- At most 10 batch attempts; commit each call.
+SELECT * FROM silver.timeseries_backfill_monitor;
+```
+
+Progress commits with each worker call. Failed jobs retain their last completed batch; fix the cause, then call `silver.resume_rollup_backfill(job_id)`. Use `silver.cancel_rollup_backfill(job_id)` to stop remaining work. Backfills preserve scheduled watermarks and retry state. Schema and configuration changes are checked before execution, and competing workers skip locked jobs or dependency chains.
+
+Run `make backfill-demo` (or `make backfill-demo-docker`) for a repeatable example. See [historical backfills](docs/backfills.md) for job controls, progress fields, and transaction boundaries. Siblings and descendants beyond the selected target require their own jobs.
 
 ## Incremental processing and late data
 
