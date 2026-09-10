@@ -34,3 +34,9 @@ BEGIN
 END
 $assert$;
 SQL
+
+# The hierarchy demo owns separate fixtures and commits each bounded worker
+# call. Running the actual launcher twice also checks rerun cleanup and its
+# embedded assertions for corrected data, deleted groups, and watermarks.
+DATABASE_URL="$TEST_DATABASE_URL" sh "$REPO_ROOT/scripts/backfill-demo.sh"
+DATABASE_URL="$TEST_DATABASE_URL" sh "$REPO_ROOT/scripts/backfill-demo.sh"

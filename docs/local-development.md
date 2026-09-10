@@ -2,7 +2,7 @@
 
 The portable installer uses PostgreSQL 14+ without extensions, AWS IAM, Flyway,
 or a scheduler. It is for a new empty development database. It applies schema
-setup plus migrations V5–V12 in one transaction and refuses an existing
+setup plus migrations V5–V14 in one transaction and refuses an existing
 installation or application objects. Use versioned migrations for upgrades.
 
 ## Docker
@@ -11,6 +11,7 @@ installation or application objects. Use versioned migrations for upgrades.
 make up
 make install-docker
 make demo-docker
+make backfill-demo-docker
 make test-docker
 make down
 ```
@@ -45,6 +46,11 @@ late correction and a repeated bucket refresh. It owns two `demo_` tables and
 can be repeated. The fixture timestamps are fixed historical dates; its rollup
 is inactive so scheduled workers do not spend time catching up this example.
 
+`make backfill-demo` runs [the backfill example](../examples/backfill.sql),
+which owns `demo_backfill_*` tables and jobs. It previews a three-level plan,
+commits bounded batches separately, applies a historical correction, and
+verifies the corrected daily output. It can also be repeated.
+
 ## Regression suite
 
 With local PostgreSQL server binaries installed:
@@ -75,8 +81,10 @@ TEST_DATABASE_URL='postgresql://test_admin@localhost/rollup_test' make test
 SQL test files receive a separate `psql` session with `ON_ERROR_STOP=1`. Each
 test controls its own transaction, so fixtures can use `BEGIN` / `ROLLBACK`.
 Shell tests inherit `TEST_DATABASE_URL`. The upgrade test installs the historical
-V10 schema into a separate database, seeds legacy data, applies V11/V12, checks
-preservation and backfill, and drops that database on exit. CI runs the same suite
+V10 schema into a separate database, seeds legacy data, applies the newer migrations,
+checks preservation and backfill, and drops that database on exit. Backfill tests
+cover planning, weighted aggregation, bounded progress, failures/resume,
+configuration drift, competing workers, and caller rollback. CI runs the same suite
 on PostgreSQL 14, 16, and 17.
 
 The portable installer does not record Flyway history. Do not point the

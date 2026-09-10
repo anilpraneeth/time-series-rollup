@@ -1,6 +1,20 @@
 # Upgrading an existing installation
 
-V11 and V12 preserve the original V1–V10 migration files and add new definitions. This is a behavior-changing engine upgrade, not an automatic conversion of historical aggregates.
+V11 and V12 preserve the original V1–V10 migration files and add new definitions. This is a behavior-changing engine upgrade, not an automatic conversion of historical aggregates. V13 and V14 add historical backfill planning and durable jobs without changing existing tables or worker behavior.
+
+## From V12 to V14
+
+Existing engine-version-2 targets do not need rebuilding. For a Flyway-managed installation, apply V13 and V14 using the existing foundational migration configuration and history. For a directly SQL-managed installation already at V12, apply the new migrations once:
+
+```sh
+psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 --single-transaction \
+  -f src/main/pgdb/migrations/foundational/timeseries/V13__backfill_planning.sql \
+  -f src/main/pgdb/migrations/foundational/timeseries/V14__resumable_backfill_jobs.sql
+```
+
+The new functions run with caller privileges. The migration grants `db_ecs_user` access to the new job tables, identity sequence, view, and functions. Existing data, logs, watermarks, retry state, and monitoring consumers remain intact. Backfill execution is opt-in: call or schedule `silver.run_rollup_backfills`, which is separate from the incremental worker. See [historical backfills](backfills.md) for planning and recovery.
+
+The remaining sections apply to upgrading the historical V1–V10 engine.
 
 ## Before applying migrations
 
@@ -33,7 +47,9 @@ For an installation managed directly with SQL that already has V1–V10, apply e
 ```sh
 psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 --single-transaction \
   -f src/main/pgdb/migrations/foundational/timeseries/V11__reliable_rollup_engine.sql \
-  -f src/main/pgdb/migrations/foundational/timeseries/V12__timeseries_operations.sql
+  -f src/main/pgdb/migrations/foundational/timeseries/V12__timeseries_operations.sql \
+  -f src/main/pgdb/migrations/foundational/timeseries/V13__backfill_planning.sql \
+  -f src/main/pgdb/migrations/foundational/timeseries/V14__resumable_backfill_jobs.sql
 ```
 
 Fresh portable installs already include these versions; never rerun them there.
